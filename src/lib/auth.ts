@@ -1,0 +1,100 @@
+import { NextAuthOptions } from "next-auth"
+import CredentialsProvider from "next-auth/providers/credentials"
+import GoogleProvider from "next-auth/providers/google"
+import bcrypt from "bcryptjs"
+import { prisma } from "./prisma"
+
+export const authOptions: NextAuthOptions = {
+  providers: [
+    GoogleProvider({
+      clientId: process.env.GOOGLE_CLIENT_ID!,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+    }),
+    CredentialsProvider({
+      name: "credentials",
+      credentials: {
+        email: { label: "Email", type: "email" },
+        password: { label: "Password", type: "password" }
+      },
+      async authorize(credentials) {
+        if (!credentials?.email || !credentials?.password) {
+          return null
+        }
+
+        const user = await prisma.user.findUnique({
+          where: {
+            email: credentials.email
+          }
+        })
+
+        if (!user || !user.password) {
+          return null
+        }
+
+        const isPasswordValid = await bcrypt.compare(
+          credentials.password,
+          user.password
+        )
+
+        if (!isPasswordValid) {
+          return null
+        }
+
+        return {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          role: user.role,
+        } as any
+      }
+    })
+  ],
+  session: {
+    strategy: "jwt"
+  },
+  callbacks: {
+    async signIn({ user, account }) {
+      if (account?.provider === "google") {
+        const existingUser = await prisma.user.findUnique({
+          where: { email: user.email! }
+        });
+
+        if (existingUser) {
+          // If user exists but was originally created with credentials
+          if (existingUser.password) {
+            throw new Error("Email already registered with password");
+          }
+          return true;
+        }
+
+        // Create new user if doesn't exist
+        await prisma.user.create({
+          data: {
+            email: user.email!,
+            name: user.name,
+            image: user.image,
+            role: "CUSTOMER"
+          }
+        });
+      }
+      return true;
+    },
+    async jwt({ token, user }: any) {
+      if (user) {
+        token.role = user.role
+      }
+      return token
+    },
+    async session({ session, token }: any) {
+      if (token) {
+        session.user.id = token.sub
+        session.user.role = token.role
+      }
+      return session
+    }
+  },
+  pages: {
+    signIn: "/auth/signin",
+    error: "/auth/error"
+  }
+}
